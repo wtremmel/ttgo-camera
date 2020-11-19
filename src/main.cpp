@@ -254,14 +254,115 @@ void setup() {
   setup_camera();
 }
 
+#define BOUNDARY     "--------------------------133747188241686651551404"
+String body(String content , String message)
+{
+  String data;
+  data = "--";
+  data += BOUNDARY;
+  data += F("\r\n");
+  if(content=="imageFile")
+  {
+    data += F("Content-Disposition: form-data; name=\"imageFile\"; filename=\"picture.jpg\"\r\n");
+    data += F("Content-Type: image/jpeg\r\n");
+    data += F("\r\n");
+  }
+  else
+  {
+    data += "Content-Disposition: form-data; name=\"" + content +"\"\r\n";
+    data += "\r\n";
+    data += message;
+    data += "\r\n";
+  }
+   return(data);
+
+}
+
+String header(String token,size_t length)
+{
+  String  data;
+      data =  F("POST /receive/upload.php HTTP/1.1\r\n");
+      data += F("cache-control: no-cache\r\n");
+      data += F("Content-Type: multipart/form-data; boundary=");
+      data += BOUNDARY;
+      data += "\r\n";
+      data += F("User-Agent: PostmanRuntime/6.4.1\r\n");
+      data += F("Accept: */*\r\n");
+      data += F("Host: ");
+      data += F("lancre.garf.de");
+      data += F("\r\n");
+      data += F("accept-encoding: gzip, deflate\r\n");
+      data += F("Connection: keep-alive\r\n");
+      data += F("content-length: ");
+      data += String(length);
+      data += "\r\n";
+      data += "\r\n";
+    return(data);
+}
+
+
+String sendImage(String token,String message, uint8_t *data_pic,size_t size_pic)
+{
+  String bodyTxt =  body("uploadBtn",message);
+  String bodyPic =  body("imageFile",message);
+  String bodyEnd =  String("--")+BOUNDARY+String("--\r\n");
+  size_t allLen = bodyTxt.length()+bodyPic.length()+size_pic+bodyEnd.length();
+  String headerTxt =  header(token,allLen);
+  WiFiClient http;
+
+  if (!http.connect("lancre.garf.de",80))
+  {
+    return("connection failed");
+  }
+
+   http.print(headerTxt+bodyTxt+bodyPic);
+   http.write(data_pic,size_pic);
+   http.print("\r\n"+bodyEnd);
+
+   delay(20);
+   long tOut = millis() + 100000;
+   while(http.connected() && tOut > millis())
+   {
+    if (http.available())
+    {
+      String serverRes = http.readStringUntil('\r');
+        return(serverRes);
+    }
+   }
+   return "Error";
+}
+
+
+void take_picture() {
+  sensor_t *s = esp_camera_sensor_get();
+  camera_fb_t *fb = NULL;
+
+  s->set_brightness(s,2);
+  s->set_exposure_ctrl(s,1);
+
+  Log.verbose(F("camera framesize: %u"),s->status.framesize);
+  fb = esp_camera_fb_get();
+  if (!fb) {
+    Log.error(F("camera capture failed"));
+    return;
+  } else {
+    Log.verbose(F("camera format %d"), fb->format);
+    Log.verbose(F("camera buf size %d"), fb->len);
+  }
+
+  Log.verbose(F("sending Image"));
+  Log.verbose(F("sent Image: %s"),sendImage("x1","Upload",fb->buf,fb->len).c_str());
+
+  esp_camera_fb_return(fb);
+}
+
 void enable_pir_sleep() {
   esp_sleep_enable_ext0_wakeup(pirInput,1);
   Log.verbose(F("sleeping"));
   delay(1000);
+
   esp_deep_sleep_start();
-
 }
-
 
 // read PIR if it exists
 void loop_pir() {
@@ -284,12 +385,15 @@ void loop_pir() {
   }
 }
 
+bool first = true;
 
 void loop() {
   loop_pir();
-  if (pirState == HIGH) {
+  if (first || pirState == HIGH) {
     // take picture and upload it
+    take_picture();
   }
   if (pirState == LOW)
     enable_pir_sleep();
+  first = false;
 }
