@@ -56,7 +56,9 @@ PubSubClient client;
 
 float bme280TempAdjust = 0.0;
 
+// Camera stuff
 bool camera_found = false;
+camera_fb_t *fb = NULL;
 
 // Flags for display
 #define DISPLAY_OFF 0
@@ -72,6 +74,7 @@ bool camera_found = false;
 // forward declarations
 
 boolean setup_wifi();
+void take_picture();
 
 // Debug functions
 void log_config () {
@@ -97,7 +100,7 @@ void printNewline(Print* _logOutput) {
   _logOutput->print('\n');
 }
 
-void print_wakeup_reason(){
+esp_sleep_wakeup_cause_t print_wakeup_reason(){
   esp_sleep_wakeup_cause_t wakeup_reason;
 
   wakeup_reason = esp_sleep_get_wakeup_cause();
@@ -110,6 +113,8 @@ void print_wakeup_reason(){
     case ESP_SLEEP_WAKEUP_ULP : Log.notice(F("Wakeup caused by ULP program")); break;
     default : Log.notice(F("Wakeup was not caused by deep sleep: %d"),wakeup_reason); break;
   }
+
+  return wakeup_reason;
 }
 
 
@@ -132,7 +137,7 @@ void setup_i2c() {
 }
 
 void setup_serial() {
-  delay(1000);
+  // delay(1000);
   Serial.begin(115200);
 }
 
@@ -167,9 +172,11 @@ void setup_camera() {
   //init with high specs to pre-allocate larger buffers
   if (psramFound()) {
       Log.verbose(F("psram found"));
-      config.frame_size = FRAMESIZE_UXGA;
-      config.jpeg_quality = 10;
-      config.fb_count = 2;
+      // config.frame_size = FRAMESIZE_UXGA;
+      config.frame_size = FRAMESIZE_SVGA;
+
+      config.jpeg_quality = 12;
+      config.fb_count = 1;
   } else {
       config.frame_size = FRAMESIZE_SVGA;
       config.jpeg_quality = 12;
@@ -245,13 +252,19 @@ void setup_logging() {
 void setup() {
   setup_serial();
   setup_logging();
-  print_wakeup_reason();
+  setup_camera();
+
+  if (print_wakeup_reason() == ESP_SLEEP_WAKEUP_EXT0) {
+    take_picture();
+  }
+
+  bool wifi_ok = setup_wifi();
+
   setup_i2c();
   setup_pir();
-  if (setup_wifi()) {
+  if (wifi_ok) {
     setup_mqtt();
   }
-  setup_camera();
 }
 
 #define BOUNDARY     "--------------------------133747188241686651551404"
@@ -334,8 +347,8 @@ String sendImage(String token,String message, uint8_t *data_pic,size_t size_pic)
 
 
 void take_picture() {
+
   sensor_t *s = esp_camera_sensor_get();
-  camera_fb_t *fb = NULL;
 
   s->set_brightness(s,2);
   s->set_exposure_ctrl(s,1);
@@ -344,16 +357,22 @@ void take_picture() {
   fb = esp_camera_fb_get();
   if (!fb) {
     Log.error(F("camera capture failed"));
-    return;
   } else {
     Log.verbose(F("camera format %d"), fb->format);
     Log.verbose(F("camera buf size %d"), fb->len);
   }
+}
 
-  Log.verbose(F("sending Image"));
-  Log.verbose(F("sent Image: %s"),sendImage("x1","Upload",fb->buf,fb->len).c_str());
+void transmit_picture() {
+  if (fb) {
+    Log.verbose(F("sending Image"));
+    Log.verbose(F("sent Image: %s"),sendImage("x1","Upload",fb->buf,fb->len).c_str());
 
-  esp_camera_fb_return(fb);
+    esp_camera_fb_return(fb);
+    fb = NULL;
+  } else {
+    Log.verbose(F("no image to send"));
+  }
 }
 
 void enable_pir_sleep() {
@@ -385,15 +404,18 @@ void loop_pir() {
   }
 }
 
-bool first = true;
 
 void loop() {
   loop_pir();
-  if (first || pirState == HIGH) {
+  if (pirState == HIGH) {
     // take picture and upload it
     take_picture();
   }
+
+  transmit_picture();
+
   if (pirState == LOW)
     enable_pir_sleep();
-  first = false;
+
+  delay(1000);
 }
