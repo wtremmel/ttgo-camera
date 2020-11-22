@@ -12,6 +12,7 @@ const char compile_date[] = __DATE__ " " __TIME__;
 
 #include <WiFi.h>
 #include <SPIFFS.h>
+#include <IP5306.h>
 
 #include "esp_camera.h"
 #include <WiFiClientSecure.h>
@@ -121,6 +122,11 @@ esp_sleep_wakeup_cause_t print_wakeup_reason(){
 void setup_i2c() {
   byte error, address;
 
+  // 0x3c DISPLAY
+  // 0x75
+  // 0x77 BME280
+
+
   Log.notice("Scanning i2c bus");
   Wire.begin(I2CSDA, I2CSCL);
   Wire.setClock(10000);
@@ -134,6 +140,44 @@ void setup_i2c() {
       Log.trace("I2C device found at address 0x%x",address);
     }
   }
+}
+
+void setup_ip5306() {
+
+  IP5306_SetPowerOnLoadEnabled(0);
+
+
+  Log.verbose(F("IP5306_GetKeyOffEnabled = %d"),IP5306_GetKeyOffEnabled());
+  Log.verbose(F("IP5306_GetBoostOutputEnabled = %d"),IP5306_GetBoostOutputEnabled());
+  Log.verbose(F("IP5306_GetPowerOnLoadEnabled = %d"),IP5306_GetPowerOnLoadEnabled());
+  Log.verbose(F("IP5306_GetChargerEnabled = %d"),IP5306_GetChargerEnabled());
+  Log.verbose(F("IP5306_GetBoostEnabled = %d"),IP5306_GetBoostEnabled());
+  Log.verbose(F("IP5306_GetLowBatShutdownEnable = %d"),IP5306_GetLowBatShutdownEnable());
+  Log.verbose(F("IP5306_GetBoostAfterVin = %d"),IP5306_GetBoostAfterVin());
+  Log.verbose(F("IP5306_GetShortPressBoostSwitchEnable = %d"),IP5306_GetShortPressBoostSwitchEnable());
+  Log.verbose(F("IP5306_GetFlashlightClicks = %d"),IP5306_GetFlashlightClicks());
+  Log.verbose(F("IP5306_GetBoostOffClicks = %d"),IP5306_GetBoostOffClicks());
+  Log.verbose(F("IP5306_GetLightLoadShutdownTime = %d"),IP5306_GetLightLoadShutdownTime());
+  Log.verbose(F("IP5306_GetLongPressTime = %d"),IP5306_GetLongPressTime());
+  Log.verbose(F("IP5306_GetChargingFullStopVoltage = %d"),IP5306_GetChargingFullStopVoltage());
+  Log.verbose(F("IP5306_GetChargeUnderVoltageLoop = %d"),IP5306_GetChargeUnderVoltageLoop());
+  Log.verbose(F("IP5306_GetEndChargeCurrentDetection = %d"),IP5306_GetEndChargeCurrentDetection());
+  Log.verbose(F("IP5306_GetVoltagePressure = %d"),IP5306_GetVoltagePressure());
+  Log.verbose(F("IP5306_GetChargeCutoffVoltage = %d"),IP5306_GetChargeCutoffVoltage());
+  Log.verbose(F("IP5306_GetChargeCCLoop = %d"),IP5306_GetChargeCCLoop());
+  Log.verbose(F("IP5306_GetVinCurrent = %d"),IP5306_GetVinCurrent());
+  Log.verbose(F("IP5306_GetShortPressDetected = %d"),IP5306_GetShortPressDetected());
+  Log.verbose(F("IP5306_GetLongPressDetected = %d"),IP5306_GetLongPressDetected());
+  Log.verbose(F("IP5306_GetDoubleClickDetected = %d"),IP5306_GetDoubleClickDetected());
+  Log.verbose(F("IP5306_GetPowerSource = %d"),IP5306_GetPowerSource());
+  Log.verbose(F("IP5306_GetBatteryFull = %d"),IP5306_GetBatteryFull());
+  Log.verbose(F("IP5306_GetLevelLeds = %d"),IP5306_GetLevelLeds());
+  Log.verbose(F("IP5306_GetOutputLoad = %d"),IP5306_GetOutputLoad());
+
+}
+
+void publish_ip5306() {
+  
 }
 
 void setup_serial() {
@@ -261,11 +305,191 @@ void setup() {
   bool wifi_ok = setup_wifi();
 
   setup_i2c();
+  setup_ip5306();
   setup_pir();
   if (wifi_ok) {
     setup_mqtt();
   }
 }
+
+boolean mqtt_reconnect() {
+  // Loop until we're reconnected
+  char mytopic[50];
+  snprintf(mytopic, 50, "/%s/%s/status", Ssite.c_str(), Sroom.c_str());
+
+  if (WiFi.status() != WL_CONNECTED) {
+    if (!setup_wifi())
+      return false;
+  }
+
+  Log.verbose("Attempting MQTT connection...%d...",client.state());
+
+  // Attempt to connect
+  if (client.connect(Smyname.c_str(),Smqttuser.c_str(),Smqttpass.c_str(),mytopic,0,0,"stopped")) {
+    Log.verbose("MQTT connected");
+
+    client.publish(mytopic, "started");
+    delay(10);
+    // ... and resubscribe to my name
+    client.subscribe(Smyname.c_str());
+    // and to my location
+    String mylocation = "/" + Ssite + "/cmd";
+    client.subscribe(mylocation.c_str());
+    String myroom = "/" + Ssite + "/" + Sroom + "/cmd";
+    client.subscribe(myroom.c_str());
+    delay(10);
+  } else {
+    Log.error("MQTT connect failed, rc=%d",client.state());
+  }
+  return client.connected();
+}
+
+
+unsigned long lastReconnectAttempt = 0;
+void mqtt_publish(char *topic, char *msg) {
+  if (!client.connected()) {
+    long now = millis();
+    if (now - lastReconnectAttempt > 5000) {
+      lastReconnectAttempt = now;
+      if (mqtt_reconnect()) {
+        lastReconnectAttempt = 0;
+      }
+    }
+  }
+  client.loop();
+
+
+  char mytopic[50];
+  snprintf(mytopic, 50, "/%s/%s/%s", Ssite.c_str(), Sroom.c_str(),topic);
+  Log.verbose("MQTT Publish message [%s]:%s",mytopic,msg);
+
+  client.publish(mytopic, msg);
+}
+
+void mqtt_publish(char *topic, uint8_t *buf, size_t len) {
+  char mytopic[50];
+  snprintf(mytopic, 50, "/%s/%s/%s", Ssite.c_str(), Sroom.c_str(),topic);
+
+  client.publish(mytopic,buf,len);
+}
+
+void mqtt_publish(const __FlashStringHelper *topic, const __FlashStringHelper *msg) {
+  char a[64],b[64];
+  snprintf(a,63,"%s",topic);
+  snprintf(b,63,"%s",msg);
+  mqtt_publish(a,b);
+}
+
+void mqtt_publish(const __FlashStringHelper *topic, char *msg) {
+  char a[64];
+  snprintf(a,63,"%s",topic);
+  mqtt_publish(a,msg);
+}
+
+void mqtt_publish(const __FlashStringHelper *topic, const char *msg) {
+  char buf[64];
+  snprintf(buf,63,"%s",msg);
+  mqtt_publish(topic, buf);
+}
+
+
+void mqtt_publish(char *topic, int i) {
+  char buf[15];
+  snprintf(buf,14,"%d",i);
+  mqtt_publish(topic, buf);
+}
+
+void mqtt_publish(char *topic, uint32_t i) {
+  char buf[32];
+  snprintf(buf,31,"%lu",i);
+  mqtt_publish(topic,buf);
+}
+
+void mqtt_publish(const __FlashStringHelper *topic, uint32_t i) {
+  char buf[32];
+  snprintf(buf,31,"%lu",i);
+  mqtt_publish(topic,buf);
+}
+
+void mqtt_publish(char *topic, float value) {
+  char buf[15];
+  snprintf(buf,14,"%.3f",value);
+  mqtt_publish(topic, buf);
+}
+
+void mqtt_publish(const __FlashStringHelper *topic, float value) {
+  char buf[15];
+  snprintf(buf,14,"%.3f",value);
+  mqtt_publish(topic, buf);
+}
+
+
+
+void mqtt_influx(char *field, char *value) {
+  char out[128];
+
+  sprintf(out,"sensor,site=%s,room=%s %s=%s",
+    Ssite.c_str(), Sroom.c_str(),field,value);
+  mqtt_publish("influx",out);
+}
+
+void mqtt_influx(char *field, int i) {
+  char buf[15];
+  snprintf(buf,14,"%di",i);
+  mqtt_influx(field,buf);
+}
+
+void mqtt_influx(char *field, float f) {
+  char buf[15];
+  snprintf(buf,14,"%.3f",f);
+  mqtt_influx(field,buf);
+}
+
+void mqtt_influx(char *field, uint32_t i) {
+  char buf[32];
+  snprintf(buf,31,"%lu",i);
+  mqtt_influx(field,buf);
+}
+
+void mqtt_influx(char *field, bool b) {
+  if (b)
+    mqtt_influx(field,"true");
+  else
+    mqtt_influx(field,"false");
+}
+
+void mqtt_influx(const __FlashStringHelper *topic, const __FlashStringHelper *msg) {
+  char a[32],b[32];
+  snprintf(a,31,"%s",topic);
+  snprintf(b,31,"%s",msg);
+  mqtt_influx(a,b);
+}
+
+void mqtt_influx(const __FlashStringHelper *topic, char *msg) {
+  char a[32];
+  snprintf(a,31,"%s",topic);
+  mqtt_influx(a,msg);
+}
+
+void mqtt_influx(const __FlashStringHelper *topic, const char *msg) {
+  char buf[32];
+  snprintf(buf,31,"%s",msg);
+  mqtt_influx(topic, buf);
+}
+
+void mqtt_influx(const __FlashStringHelper *topic, uint32_t i) {
+  char buf[32];
+  snprintf(buf,31,"%lu",i);
+  mqtt_influx(topic,buf);
+}
+
+void mqtt_influx(const __FlashStringHelper *topic, float f) {
+  char buf[32];
+  snprintf(buf,31,"%.3f",f);
+  mqtt_influx(topic,buf);
+}
+
+
 
 #define BOUNDARY     "--------------------------133747188241686651551404"
 String body(String content , String message)
@@ -404,6 +628,9 @@ void loop_pir() {
   }
 }
 
+void loop_publish_voltage(){
+
+}
 
 void loop() {
   loop_pir();
